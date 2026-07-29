@@ -30,6 +30,7 @@ jobs:
             emscripten/emsdk:4.0.23 \
             bash -lc '
               set -euo pipefail
+              export EM_CACHE=/tmp/emscripten-cache
               mkdir -p "$EM_CACHE"
               node --version
               npm --version
