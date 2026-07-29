@@ -67,5 +67,6 @@ jobs:
       - name: Upload package to GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG_NAME: ${{ github.event.release.tag_name }}
         run: gh release upload "$TAG_NAME" dist/*.tgz --clobber
