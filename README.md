@@ -6,13 +6,14 @@ This allows you to compile `.py` files to `.mpy` files directly in a browser or 
 One WebAssembly module is built per `.mpy` ABI version. You can select the target either by
 ABI, or - usually more convenient - by the MicroPython release it has to run on:
 
-| MicroPython release | .mpy version | built from |
+| MicroPython release | `.mpy` version | `mpy-cross` built from |
 | :------------------ | :----------- | :--------- |
 | v1.23.0 and up      | 6.3 | v1.28.0 |
 | v1.22.x             | 6.2 | v1.22.2 |
 | v1.20 - v1.21.0     | 6.1 | v1.21.0 |
 | v1.19.x             | 6   | v1.19.1 |
 | v1.12 - v1.18       | 5   | v1.18 |
+| v1.11               | 4   | v1.11 |
 
 The table lives in [`abi-versions.json`](abi-versions.json), which is the single source of
 truth for both the build and the runtime mapping.
@@ -28,10 +29,17 @@ truth for both the build and the runtime mapping.
 
 ## Building
 
-Prerequisites: **Python 3** and **git**. That is all - the Emscripten SDK and the pinned
-MicroPython checkouts are downloaded automatically on first build, into `.emsdk/` and
-`.micropython/`. No GNU make, gcc or POSIX shell is required, so this works the same on
-Windows as it does on Linux and macOS.
+Prerequisites: **Python 3**, **git**, **GNU make** and a POSIX shell - MicroPython's own
+makefiles do the building, and they expect `rm`/`cp`/`sed`/`cat`. Linux, macOS, WSL and
+MSYS2/Git Bash all qualify. No host C compiler is needed. The Emscripten SDK and the
+pinned MicroPython checkouts are downloaded automatically on first build, into `.emsdk/`
+and `.micropython/`.
+
+`build.py` only fetches the sources, runs `mpy-cross/Makefile` with `CC` pointed at `emcc`
+and the Emscripten link flags in `LDFLAGS_EXTRA`, and copies the result into `build/`.
+Which sources to compile and which `genhdr/` files to generate is left entirely to the
+release being built, so the six checkouts spanning v1.11..v1.28 need no special-casing
+here - only v1.11 needs [a patch](patches/v1.11.patch), for fixes upstream made later.
 
 ```sh
 npm install --include=dev
@@ -139,7 +147,7 @@ The object returned by the `compile` function promise.
 
 Returns the `.mpy` ABI used by a given MicroPython release, per the table at the top of this
 README. Accepts `'1.22.2'`, `'v1.22.2'` or `'1.22'`, and ignores any pre-release suffix, so
-`'v1.23.0-preview.42.gabcdef'` maps as `v1.23.0`. Throws for releases older than v1.12.
+`'v1.23.0-preview.42.gabcdef'` maps as `v1.23.0`. Throws for releases older than v1.11.
 
 ```js
 abiForMicropython("v1.21.0"); // "6.1"

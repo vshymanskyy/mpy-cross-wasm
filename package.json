@@ -1,6 +1,6 @@
 {
     "name": "@vshymanskyy/mpy-cross-wasm",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "MicroPython mpy-cross tool compiled to WebAssembly",
     "type": "module",
     "main": "./build/index.js",

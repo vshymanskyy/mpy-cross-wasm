@@ -27,7 +27,7 @@ jobs:
             --env EM_CACHE=/tmp/emscripten-cache \
             --volume "$PWD:/src" \
             --workdir /src \
-            emscripten/emsdk:4.0.23 \
+            emscripten/emsdk:6.0.5 \
             bash -lc '
               set -euo pipefail
               export EM_CACHE=/tmp/emscripten-cache

@@ -3,5 +3,6 @@
     {"micropython_min": "1.22", "abi": "6.2", "tag": "v1.22.2", "git_hash": "8cd15829e293f01dae91b6a2d4a995bfaeca887b"},
     {"micropython_min": "1.20", "abi": "6.1", "tag": "v1.21.0", "git_hash": "e00a144008f368df878c12606fdbf651af2a1dc0"},
     {"micropython_min": "1.19", "abi": "6",   "tag": "v1.19.1", "git_hash": "9b486340da22931cde82872f79e1c34db959548b"},
-    {"micropython_min": "1.12", "abi": "5",   "tag": "v1.18",   "git_hash": "da4b38e7562dfa451917f9d7f344a7f26de8c7bd"}
+    {"micropython_min": "1.12", "abi": "5",   "tag": "v1.18",   "git_hash": "da4b38e7562dfa451917f9d7f344a7f26de8c7bd"},
+    {"micropython_min": "1.11", "abi": "4",   "tag": "v1.11",   "git_hash": "6f75c4f3cd393131579db70cdf0b35d1fe5b95ab"}
 ]

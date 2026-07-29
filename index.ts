@@ -34,19 +34,10 @@ function isAtLeast(version: Version, bound: Version): boolean {
 
 /**
  * The `.mpy` ABI version used by a given MicroPython release.
- *
- * | MicroPython release | .mpy version |
- * | :------------------ | :----------- |
- * | v1.23.0 and up      | 6.3 |
- * | v1.22.x             | 6.2 |
- * | v1.20 - v1.21.0     | 6.1 |
- * | v1.19.x             | 6   |
- * | v1.12 - v1.18       | 5   |
- *
  * Any pre-release suffix is ignored, so `v1.23.0-preview.42` maps as `v1.23.0`.
  *
  * @param version A MicroPython release, with or without the leading `v`.
- * @throws If the release predates v1.12, whose ABI this package does not build.
+ * @throws If the release predates v1.11, whose ABI this package does not build.
  */
 export function abiForMicropython(version: string): AbiVersion {
     const parsed = parseVersion(version);

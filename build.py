@@ -1,17 +1,6 @@
 #!/usr/bin/env python3
 """Build MicroPython's mpy-cross to WebAssembly, once per .mpy ABI version.
 
-Everything needed is fetched on demand: the pinned MicroPython checkouts land in
-`.micropython/<tag>/` and, if `emcc` is not already on PATH, the Emscripten SDK
-lands in `.emsdk/`. The only host prerequisites are Python 3 and git -- there is
-deliberately no dependency on GNU make, gcc, or a POSIX shell, so this runs the
-same way on Windows as it does on Linux and macOS.
-
-MicroPython's own build normally compiles a host `mpy-cross` first, purely to get
-the generated headers in `genhdr/`. We skip that: the generators are plain Python
-scripts that just need a C preprocessor, and `emcc -E` is a better one to use here
-than the host gcc anyway -- qstrs then get collected for the actual target.
-
 Usage:
     python build.py                # build every ABI in abi-versions.json
     python build.py 6 6.3          # build only these ABIs
@@ -23,7 +12,6 @@ Usage:
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -32,18 +20,33 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 ABI_VERSIONS_JSON = ROOT / "abi-versions.json"
 OUT_DIR = ROOT / "build"
+PATCH_DIR = ROOT / "patches"
 MICROPYTHON_DIR = ROOT / ".micropython"
 EMSDK_DIR = ROOT / ".emsdk"
 
 MICROPYTHON_REPO = "https://github.com/micropython/micropython.git"
 EMSDK_REPO = "https://github.com/emscripten-core/emsdk.git"
-EMSDK_VERSION = "4.0.23"
+EMSDK_VERSION = "6.0.5"
 
-# Name of the intermediate directory created inside each MicroPython checkout.
-# Mirrors upstream's `mpy-cross/build`, so every path we hand to MicroPython's
-# scripts stays short and relative -- which keeps the qstr filename mangling in
-# makeqstrdefs.py free of drive letters and backslashes.
+MAKE = os.environ.get("MAKE", "make")
+
+# Name of the build directory we ask upstream's makefile to use, instead of its
+# default `build`, so a wasm build and a native one can coexist in a checkout.
+# Debug objects get their own, because make cannot see that the flags changed.
 BUILD_SUBDIR = "build-wasm"
+BUILD_SUBDIR_DEBUG = "build-wasm-debug"
+
+# Emscripten link flags. These are the only thing the makefile cannot know about;
+# they go into LDFLAGS_EXTRA, which every mpy-cross Makefile appends to LDFLAGS.
+EM_LDFLAGS = [
+    "-sMODULARIZE=1",
+    "-sEXPORT_NAME=MpyCross",
+    "-sEXPORT_ES6=1",
+    "-sEXIT_RUNTIME=1",
+    "-sALLOW_MEMORY_GROWTH=1",
+    "-sFORCE_FILESYSTEM=1",
+    "-sENVIRONMENT=web,worker,node",
+]
 
 
 # --------------------------------------------------------------------------
@@ -51,13 +54,23 @@ BUILD_SUBDIR = "build-wasm"
 # --------------------------------------------------------------------------
 
 
-def run(cmd, cwd=None, capture=False, stdin_text=None):
+def succeeds(cmd, cwd=None):
+    """Run a command only for its exit status, discarding its output."""
+    return subprocess.run(
+        [str(c) for c in cmd],
+        cwd=str(cwd) if cwd else None,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
+def run(cmd, cwd=None, capture=False):
     """Run a command given as an argv list. Never goes through a shell."""
     cmd = [str(c) for c in cmd]
     proc = subprocess.run(
         cmd,
         cwd=str(cwd) if cwd else None,
-        input=stdin_text.encode("utf-8") if stdin_text is not None else None,
         stdout=subprocess.PIPE if capture else None,
         check=False,
     )
@@ -65,13 +78,13 @@ def run(cmd, cwd=None, capture=False, stdin_text=None):
         raise SystemExit(
             "command failed (exit %d): %s" % (proc.returncode, " ".join(cmd))
         )
-    if not capture:
-        return None
-    # Normalise here rather than at every call site: a Python child on Windows
-    # writes CRLF to the pipe, and writing that back out as text would translate
-    # it a second time. The resulting CR CR LF is not a valid line continuation,
-    # which silently breaks the multi-line #defines in moduledefs.h.
-    return proc.stdout.decode("utf-8", "replace").replace("\r\n", "\n")
+    return proc.stdout.decode("utf-8", "replace") if capture else None
+
+
+def shquote(path):
+    """Spell a path for the POSIX shell that make runs its recipes with."""
+    text = Path(path).as_posix()
+    return '"%s"' % text if " " in text else text
 
 
 def log(*parts):
@@ -84,15 +97,15 @@ def log(*parts):
 
 
 def ensure_emsdk():
-    """Return the argv prefix that invokes emcc, installing emsdk if needed."""
+    """Return the value to use as `CC`, installing emsdk if emcc is missing."""
     override = os.environ.get("EMCC")
     if override:
-        return [override]
+        return shquote(override)
 
     found = shutil.which("emcc")
     if found:
         log("using emcc from PATH:", found)
-        return [found]
+        return "emcc"
 
     if not EMSDK_DIR.exists():
         log("emcc not found, cloning emsdk into", EMSDK_DIR.name)
@@ -106,10 +119,11 @@ def ensure_emsdk():
         run([sys.executable, emsdk_py, "activate", EMSDK_VERSION], cwd=EMSDK_DIR)
 
     # Point emcc at the config emsdk just wrote, so we can drive emcc.py with our
-    # own interpreter and never touch the emcc.bat / emcc shell wrappers.
+    # own interpreter and never touch the emcc / emcc.bat wrappers -- the plain
+    # `emcc` one has a `python3` shebang, which is not a given on Windows.
     os.environ["EM_CONFIG"] = str(EMSDK_DIR / ".emscripten")
     log("using emcc from", EMSDK_DIR.name)
-    return [sys.executable, str(emcc_py)]
+    return "%s %s" % (shquote(sys.executable), shquote(emcc_py))
 
 
 # --------------------------------------------------------------------------
@@ -117,20 +131,49 @@ def ensure_emsdk():
 # --------------------------------------------------------------------------
 
 
+def apply_patches(dest, tag):
+    """Apply `patches/<tag>.patch`, if this release needs one, exactly once.
+
+    Older releases predate WebAssembly support and need a fix or two backported
+    from a later release; the patch itself explains what and why.
+    """
+    patch = PATCH_DIR / (tag + ".patch")
+    if not patch.exists():
+        return
+    # Reversing cleanly is the definition of "already applied", which keeps this
+    # idempotent for checkouts fetched before the patch existed.
+    if succeeds(["git", "apply", "--reverse", "--check", patch], cwd=dest):
+        return
+    log("patching", tag)
+    if not succeeds(["git", "apply", patch], cwd=dest):
+        raise SystemExit(
+            "could not apply %s to %s -- the checkout has been modified, or the "
+            "patch grew a hunk since it was fetched. Delete the checkout and retry."
+            % (patch.name, dest)
+        )
+
+
 def ensure_micropython(tag, git_hash):
     """Return the path to a MicroPython checkout pinned at `git_hash`."""
     dest = MICROPYTHON_DIR / tag
 
     if dest.exists():
+        # Without this, `git rev-parse` in a checkout that has lost its .git
+        # walks up and answers for *this* repository instead.
+        if not (dest / ".git").exists():
+            raise SystemExit(
+                "%s is not a git checkout -- delete it and retry" % dest
+            )
         head = run(
             ["git", "rev-parse", "HEAD"], cwd=dest, capture=True
         ).strip()
-        if head == git_hash:
-            return dest
-        raise SystemExit(
-            "%s is at %s but abi-versions.json pins %s -- delete it and retry"
-            % (dest, head[:12], git_hash[:12])
-        )
+        if head != git_hash:
+            raise SystemExit(
+                "%s is at %s but abi-versions.json pins %s -- delete it and retry"
+                % (dest, head[:12], git_hash[:12])
+            )
+        apply_patches(dest, tag)
+        return dest
 
     log("fetching micropython", tag)
     MICROPYTHON_DIR.mkdir(parents=True, exist_ok=True)
@@ -150,87 +193,8 @@ def ensure_micropython(tag, git_hash):
         raise SystemExit(
             "tag %s resolved to %s, expected %s" % (tag, head[:12], git_hash[:12])
         )
+    apply_patches(dest, tag)
     return dest
-
-
-# --------------------------------------------------------------------------
-# reading MicroPython's makefiles
-# --------------------------------------------------------------------------
-
-
-def _assignment(text, var):
-    """Return the right-hand side of `var = ...`, following \\ continuations."""
-    lines = text.splitlines()
-    pattern = re.compile(r"\s*%s\s*[:+]?=" % re.escape(var))
-    for i, line in enumerate(lines):
-        if pattern.match(line):
-            block = [line.split("=", 1)[1]]
-            while block[-1].rstrip().endswith("\\") and i + 1 < len(lines):
-                i += 1
-                block.append(lines[i])
-            return "\n".join(block)
-    return None
-
-
-def _object_list(block):
-    """Turn a makefile list of .o files into a list of .c paths."""
-    prefix = ""
-    m = re.search(r"\$\(addprefix\s+([^,]+),", block)
-    if m:
-        prefix = m.group(1).strip()
-    return [prefix + name + ".c" for name in re.findall(r"([\w./+-]+)\.o\b", block)]
-
-
-def read_source_lists(mp_dir):
-    """Work out this version's source list straight from its own py/py.mk.
-
-    A hand-maintained list cannot span v1.18..v1.28 (files get renamed and added),
-    so we read `PY_CORE_O_BASENAME` -- the same variable mpy-cross links via
-    `OBJ = $(PY_CORE_O)`.
-    """
-    py_mk = (mp_dir / "py" / "py.mk").read_text(encoding="utf-8")
-
-    core_block = _assignment(py_mk, "PY_CORE_O_BASENAME")
-    if not core_block:
-        raise SystemExit("could not find PY_CORE_O_BASENAME in %s/py/py.mk" % mp_dir)
-    core = _object_list(core_block)
-    if len(core) < 50:
-        raise SystemExit(
-            "parsed only %d core sources from py.mk -- upstream layout changed"
-            % len(core)
-        )
-    for src in core:
-        if not (mp_dir / src).exists():
-            raise SystemExit("py.mk lists %s but it does not exist in %s" % (src, mp_dir))
-
-    # SRC_QSTR_IGNORE = py/nlr%
-    qstr = [s for s in core if not s.startswith("py/nlr")]
-
-    # v1.18 and v1.19.1 also scan extmod for qstrs, even though mpy-cross does not
-    # link it. Later versions dropped this from SRC_QSTR.
-    extmod_block = _assignment(py_mk, "PY_EXTMOD_O_BASENAME")
-    if extmod_block:
-        qstr += [s for s in _object_list(extmod_block) if (mp_dir / s).exists()]
-
-    # From mpy-cross/Makefile, identical in every version we build.
-    link = core + [
-        "mpy-cross/main.c",
-        "mpy-cross/gccollect.c",
-        "shared/runtime/gchelper_generic.c",
-    ]
-    return link, qstr
-
-
-def detect_features(mp_dir):
-    """Which genhdr files this version needs, and how they are produced."""
-    py_mk = (mp_dir / "py" / "py.mk").read_text(encoding="utf-8")
-    return {
-        # v1.19.1+ derive moduledefs from the qstr preprocessor pass; v1.18
-        # scans the sources directly with makemoduledefs.py --vpath.
-        "moduledefs_collected": "moduledefs.collected" in py_mk,
-        # v1.21+ only.
-        "root_pointers": (mp_dir / "py" / "make_root_pointers.py").exists(),
-    }
 
 
 # --------------------------------------------------------------------------
@@ -238,141 +202,81 @@ def detect_features(mp_dir):
 # --------------------------------------------------------------------------
 
 
-def topdir_relative(paths):
-    """Rewrite top-relative source paths for a cwd of <mp>/mpy-cross."""
-    out = []
-    for p in paths:
-        out.append(p[len("mpy-cross/"):] if p.startswith("mpy-cross/") else "../" + p)
-    return out
+def make_vars(cwd, prog, build_dir, emcc, debug):
+    """The overrides that turn a host mpy-cross build into a wasm one."""
+    # Relative to the makefile's directory: everything the recipes see stays a
+    # short relative path, with no drive letter or space to quote.
+    pre_js = Path(os.path.relpath(ROOT / "mpy-cross.pre.js", cwd)).as_posix()
+    ldflags = list(EM_LDFLAGS) + ["--pre-js", pre_js]
+    if debug:
+        ldflags.append("-gsource-map")
 
-
-def generate_headers(mp_dir, emcc, cflags, qstr_sources, features):
-    """Reproduce the genhdr/ rules from py/py.mk and py/mkrules.mk.
-
-    Only the ordering is ours; every generator invoked here is MicroPython's own
-    script, taken from the checkout being built.
-    """
-    cwd = mp_dir / "mpy-cross"
-    hdr = BUILD_SUBDIR + "/genhdr"
-    (cwd / hdr).mkdir(parents=True, exist_ok=True)
-
-    py = [sys.executable]
-    mqd = "../py/makeqstrdefs.py"
-    sources = topdir_relative(qstr_sources)
-
-    def write(name, text):
-        # newline='' so the LF-normalised text above survives verbatim.
-        with open(cwd / hdr / name, "w", encoding="utf-8", newline="") as f:
-            f.write(text)
-
-    run(py + ["../py/makeversionhdr.py", hdr + "/mpversion.h"], cwd=cwd)
-
-    if not features["moduledefs_collected"]:
-        # v1.18: moduledefs.h is scanned from source and must exist before the
-        # qstr preprocessor pass, because the sources include it.
-        out = run(
-            py + ["../py/makemoduledefs.py", "--vpath=., .., "] + sources,
-            cwd=cwd,
-            capture=True,
-        )
-        write("moduledefs.h", out)
-
-    log("  preprocessing %d sources for qstrs" % len(sources))
-    run(
-        py + [mqd, "pp"] + emcc + ["-E",
-             "output", hdr + "/qstr.i.last",
-             "cflags"] + cflags + ["-DNO_QSTR",
-             "cxxflags"] + cflags + ["-DNO_QSTR",
-             "sources"] + sources + [
-             "dependencies",
-             "changed_sources"] + sources,
-        cwd=cwd,
-    )
-
-    def split_and_cat(mode, collected):
-        # `cat` concatenates every file in the split directory, so a leftover
-        # entry for a source that no longer exists would silently be included.
-        shutil.rmtree(cwd / hdr / mode, ignore_errors=True)
-        run(py + [mqd, "split", mode, hdr + "/qstr.i.last", hdr + "/" + mode, "_"], cwd=cwd)
-        run(py + [mqd, "cat", mode, "_", hdr + "/" + mode, hdr + "/" + collected], cwd=cwd)
-
-    split_and_cat("qstr", "qstrdefs.collected.h")
-
-    if features["moduledefs_collected"]:
-        split_and_cat("module", "moduledefs.collected")
-        out = run(py + ["../py/makemoduledefs.py", hdr + "/moduledefs.collected"],
-                  cwd=cwd, capture=True)
-        write("moduledefs.h", out)
-
-    if features["root_pointers"]:
-        split_and_cat("root_pointer", "root_pointers.collected")
-        out = run(py + ["../py/make_root_pointers.py", hdr + "/root_pointers.collected"],
-                  cwd=cwd, capture=True)
-        write("root_pointers.h", out)
-
-    # The qstrdefs.generated.h rule is a cat|sed|cpp|sed pipeline in py.mk; doing
-    # it here in Python is what keeps this working without POSIX tools.
-    parts = [
-        (mp_dir / "py" / "qstrdefs.h").read_text(encoding="utf-8"),
-        (cwd / "qstrdefsport.h").read_text(encoding="utf-8"),
-        (cwd / hdr / "qstrdefs.collected.h").read_text(encoding="utf-8"),
-    ]
-    # sed 's/^Q(.*)/"&"/' -- hide qstr names from the preprocessor
-    quoted = re.sub(r"(?m)^(Q\(.*)$", r'"\1"', "".join(parts))
-    preprocessed = run(emcc + ["-E"] + cflags + ["-x", "c", "-"],
-                       cwd=cwd, capture=True, stdin_text=quoted)
-    # sed 's/^\"\(Q(.*)\)\"/\1/' -- and reveal them again
-    preprocessed = re.sub(r'(?m)^"(Q\(.*\))"', r"\1", preprocessed)
-    write("qstrdefs.preprocessed.h", preprocessed)
-
-    out = run(py + ["../py/makeqstrdata.py", hdr + "/qstrdefs.preprocessed.h"],
-              cwd=cwd, capture=True)
-    write("qstrdefs.generated.h", out)
+    variables = {
+        "BUILD": build_dir,
+        # emcc picks its output format from the extension: .mjs is an ES module
+        # plus a sibling .wasm.
+        "PROG": prog,
+        "CC": emcc,
+        # mkenv.mk defaults to `python3`, which on Windows is usually not a thing.
+        "PYTHON": shquote(sys.executable),
+        # gcc's warning set, with -Werror; clang picks different nits, and this
+        # is not our code to fix.
+        "CWARN": "",
+        # -Wl,-Map=...,--cref and -dead_strip are for native linkers. wasm-ld
+        # garbage-collects sections on its own.
+        "LDFLAGS_ARCH": "",
+        "COPT": "-O0" if debug else "-Oz",
+        "LDFLAGS_EXTRA": " ".join(ldflags),
+        # There is nothing to strip or size-report in a .mjs/.wasm pair, and the
+        # binutils these name do not exist in the emscripten toolchain.
+        "STRIP": "true",
+        "SIZE": "true",
+    }
+    if debug:
+        variables["DEBUG"] = "1"
+    return ["%s=%s" % kv for kv in variables.items()]
 
 
 def build_abi(entry, emcc, debug=False):
     abi = entry["abi"]
     mp_dir = ensure_micropython(entry["tag"], entry["git_hash"])
     cwd = mp_dir / "mpy-cross"
+    prog = "mpy-cross-v%s.mjs" % abi
+    build_dir = BUILD_SUBDIR_DEBUG if debug else BUILD_SUBDIR
 
     log("building ABI %s from %s" % (abi, entry["tag"]))
-
-    link_sources, qstr_sources = read_source_lists(mp_dir)
-    features = detect_features(mp_dir)
-
-    cflags = ["-std=gnu99", "-I.", "-I" + BUILD_SUBDIR, "-I.."]
-    cflags += ["-O0", "-g"] if debug else ["-Oz"]
-
-    generate_headers(mp_dir, emcc, cflags, qstr_sources, features)
-
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
-    output = OUT_DIR / ("mpy-cross-v%s.mjs" % abi)
-
-    ldflags = [
-        "-sMODULARIZE=1",
-        "-sEXPORT_NAME=MpyCross",
-        "-sEXPORT_ES6=1",
-        "-sEXIT_RUNTIME=1",
-        "-sALLOW_MEMORY_GROWTH=1",
-        "-sFORCE_FILESYSTEM=1",
-        "-sENVIRONMENT=web,worker,node",
-    ]
-    if debug:
-        ldflags += ["-gsource-map"]
-
-    log("  linking", output.name)
     run(
-        emcc + cflags + ldflags
-        + ["--pre-js", str(ROOT / "mpy-cross.pre.js")]
-        + topdir_relative(link_sources)
-        + ["-o", str(output)],
-        cwd=cwd,
+        [MAKE, "-C", cwd, "-j", os.cpu_count() or 1]
+        + make_vars(cwd, prog, build_dir, emcc, debug)
     )
 
-    wasm = output.with_suffix(".wasm")
-    log("  ok: %s (%.0f KB) + %s (%.0f KB)"
-        % (output.name, output.stat().st_size / 1024,
-           wasm.name, wasm.stat().st_size / 1024))
+    # Up to v1.19.1 the makefile links PROG in the source directory; v1.21.0
+    # moved it into BUILD.
+    built = cwd / build_dir / prog
+    if not built.exists():
+        built = cwd / prog
+
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    outputs = []
+    for src in [built, built.with_suffix(".wasm"), built.with_suffix(".wasm.map")]:
+        if src.exists():
+            shutil.copy2(src, OUT_DIR / src.name)
+            outputs.append("%s (%.0f KB)" % (src.name, src.stat().st_size / 1024))
+    log("  ok:", " + ".join(outputs))
+
+
+def clean_checkouts():
+    """Remove what the makefiles wrote inside each MicroPython checkout."""
+    for cwd in MICROPYTHON_DIR.glob("*/mpy-cross"):
+        # Both build dirs, plus the PROG that pre-v1.21 makefiles link in here.
+        stale = list(cwd.glob("build-wasm*")) + list(cwd.glob("mpy-cross-v*"))
+        for path in stale:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            else:
+                path.unlink()
+        if stale:
+            log("cleaned", cwd.parent.name)
 
 
 # --------------------------------------------------------------------------
@@ -474,11 +378,7 @@ def main():
     args = parser.parse_args()
 
     if args.clean or args.distclean:
-        # Generated headers live inside each checkout, next to upstream's own
-        # build dir; drop them too so --clean really means a full rebuild.
-        for stale in MICROPYTHON_DIR.glob("*/mpy-cross/" + BUILD_SUBDIR):
-            shutil.rmtree(stale, ignore_errors=True)
-            log("removed", stale.parent.parent.name + "/" + BUILD_SUBDIR)
+        clean_checkouts()
         for path in [OUT_DIR, ROOT / "abi-loaders.ts"]:
             if path.is_dir():
                 shutil.rmtree(path)

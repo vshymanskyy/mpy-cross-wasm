@@ -1,0 +1,74 @@
+v1.11 predates any WebAssembly-capable build of mpy-cross, and does not compile
+for a target that has no native NLR implementation and a size_t distinct from
+mp_uint_t. Both source hunks below are the fixes MicroPython itself made later;
+they are in v1.18 verbatim, so no other ABI needs a patch.
+
+  mpy-cross/main.c  stderr_print_strn must match mp_print_strn_t, whose length
+                    argument is a size_t. On wasm32 that is `unsigned long` while
+                    mp_uint_t is `unsigned int` -- same width, different type, so
+                    clang rejects the initialiser.
+  py/nativeglue.c   With MICROPY_NLR_SETJMP (the only option on wasm) nlr_push is
+                    a macro rather than a function, so mp_fun_table cannot take
+                    its address. Upstream stores nlr_push_tail there instead.
+
+The third hunk drops a block that upstream itself calls a temporary hack, and
+deleted in v1.18: it undefines BUILD, PROG, COPT and the *_EXTRA variables at the
+top of the makefile, which throws away everything build.py passes on the make
+command line -- including the emscripten link flags and the .mjs output name.
+
+  mpy-cross/Makefile
+
+diff --git a/mpy-cross/Makefile b/mpy-cross/Makefile
+index 4ff96fc..2116cc6 100644
+--- a/mpy-cross/Makefile
++++ b/mpy-cross/Makefile
+@@ -1,20 +1,3 @@
+-# The following is a temporary hack to forefully undefine vars that might have
+-# be defined by a calling Makefile (from recursive make).
+-# TODO: Find a better way to be able to call this Makefile recursively.
+-ifneq ($(findstring undefine,$(.FEATURES)),)
+-override undefine COPT
+-override undefine CFLAGS_EXTRA
+-override undefine LDFLAGS_EXTRA
+-override undefine MICROPY_FORCE_32BIT
+-override undefine CROSS_COMPILE
+-override undefine FROZEN_DIR
+-override undefine FROZEN_MPY_DIR
+-override undefine USER_C_MODULES
+-override undefine SRC_MOD
+-override undefine BUILD
+-override undefine PROG
+-endif
+-
+ include ../py/mkenv.mk
+ 
+ # define main target
+diff --git a/mpy-cross/main.c b/mpy-cross/main.c
+index 970ad2d..7c5419d 100644
+--- a/mpy-cross/main.c
++++ b/mpy-cross/main.c
+@@ -47,7 +47,7 @@ mp_uint_t mp_verbose_flag = 0;
+ // Make it larger on a 64 bit machine, because pointers are larger.
+ long heap_size = 1024*1024 * (sizeof(mp_uint_t) / 4);
+ 
+-STATIC void stderr_print_strn(void *env, const char *str, mp_uint_t len) {
++STATIC void stderr_print_strn(void *env, const char *str, size_t len) {
+     (void)env;
+     ssize_t dummy = write(STDERR_FILENO, str, len);
+     (void)dummy;
+diff --git a/py/nativeglue.c b/py/nativeglue.c
+index c810f31..f513f3d 100644
+--- a/py/nativeglue.c
++++ b/py/nativeglue.c
+@@ -223,7 +223,11 @@ const void *const mp_fun_table[MP_F_NUMBER_OF] = {
+     mp_call_method_n_kw_var,
+     mp_native_getiter,
+     mp_native_iternext,
++#if MICROPY_NLR_SETJMP
++    nlr_push_tail,
++#else
+     nlr_push,
++#endif
+     nlr_pop,
+     mp_native_raise,
+     mp_import_name,

@@ -12,6 +12,8 @@ import {
 describe('abiForMicropython', () => {
     // Every row of the table in the README, and both sides of every boundary.
     const cases = [
+        ['1.11', '4'],
+        ['v1.11.0', '4'],
         ['1.12', '5'],
         ['v1.18', '5'],
         ['1.18.1', '5'],
@@ -40,7 +42,7 @@ describe('abiForMicropython', () => {
         assert.equal(abiForMicropython('3.0.0'), defaultAbi);
     });
 
-    for (const tooOld of ['1.11', '1.0', 'v0.9']) {
+    for (const tooOld of ['1.10', '1.0', 'v0.9']) {
         it(`rejects ${tooOld} as older than any ABI this package builds`, () => {
             assert.throws(() => abiForMicropython(tooOld), /older than/);
         });
