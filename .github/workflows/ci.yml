@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Build with Emscripten
+        run: |
+          docker run --rm \
+            --user "$(id -u):$(id -g)" \
+            --env HOME=/tmp \
+            --env npm_config_cache=/tmp/.npm \
+            --env EM_CACHE=/tmp/emscripten-cache \
+            --volume "$PWD:/src" \
+            --workdir /src \
+            emscripten/emsdk:4.0.23 \
+            bash -lc '
+              set -euo pipefail
+              mkdir -p "$EM_CACHE"
+              node --version
+              npm --version
+              emcc --version
+              npm ci
+              npm run build
+              npm test
+              mkdir -p dist
+              npm pack --pack-destination dist
+            '
+
+      - name: Upload prebuilt package
+        uses: actions/upload-artifact@v7
+        with:
+          name: prebuilt-package
+          path: dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    name: Attach release artifacts
+    needs: build
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download prebuilt package
+        uses: actions/download-artifact@v7
+        with:
+          name: prebuilt-package
+          path: dist
+
+      - name: Upload package to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: gh release upload "$TAG_NAME" dist/*.tgz --clobber

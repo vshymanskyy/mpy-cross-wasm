@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",                       /* mpy-cross runs in modern browsers, workers and Node. */
+    "module": "ESNext",                       /* Keep dynamic import() intact so bundlers can code-split per ABI. */
+    "moduleResolution": "bundler",
+    "lib": ["ES2020", "DOM", "WebWorker"],
+    "types": ["emscripten"],                  /* Ambient EmscriptenModule types; internal only, never leaks into index.d.ts. */
+    "declaration": true,                      /* Generates corresponding '.d.ts' file. */
+    "declarationMap": true,                   /* Generates a sourcemap for each corresponding '.d.ts' file. */
+    "outDir": "build",                        /* Sits alongside the .mjs/.wasm files emitted by build.py. */
+
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  },
+  "files": ["index.ts", "abi-loaders.ts"]
+}

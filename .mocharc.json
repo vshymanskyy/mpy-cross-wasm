@@ -1,0 +1,4 @@
+{
+    "spec": "test/**/*.test.mjs",
+    "timeout": 60000
+}

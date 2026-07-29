@@ -1,0 +1,46 @@
+{
+    "name": "@vshymanskyy/mpy-cross-wasm",
+    "version": "1.0.0",
+    "description": "MicroPython mpy-cross tool compiled to WebAssembly",
+    "type": "module",
+    "main": "./build/index.js",
+    "types": "./build/index.d.ts",
+    "exports": {
+        ".": {
+            "types": "./build/index.d.ts",
+            "default": "./build/index.js"
+        },
+        "./build/*": "./build/*"
+    },
+    "files": [
+        "./build/"
+    ],
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/vshymanskyy/mpy-cross-wasm",
+        "directory": ""
+    },
+    "publishConfig": {
+        "registry": "https://registry.npmjs.org",
+        "access": "public"
+    },
+    "author": "Volodymyr Shymanskyy",
+    "license": "MIT",
+    "scripts": {
+        "build": "node build.mjs && tsc",
+        "build:debug": "node build.mjs --debug && tsc",
+        "clean": "node build.mjs --clean",
+        "distclean": "node build.mjs --distclean",
+        "test": "mocha"
+    },
+    "devDependencies": {
+        "@types/emscripten": "^1.41.5",
+        "mocha": "^11.7.6",
+        "typescript": "^7.0.2"
+    },
+    "browser": {
+        "crypto": false,
+        "fs": false,
+        "path": false
+    }
+}
