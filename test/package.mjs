@@ -17,7 +17,9 @@ export const {
     abiMicropythonMin,
     abiSources,
     abiVersions,
+    clearCache,
     compile,
     defaultAbi,
+    preload,
     wasmFileName,
 } = pkg;

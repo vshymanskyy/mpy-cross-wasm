@@ -25,6 +25,7 @@ truth for both the build and the runtime mapping.
 -   WebAssembly (WASM) backend ensures cross-platform compatibility.
 -   ES module API for seamless integration with modern JavaScript projects.
 -   Each ABI is loaded through its own dynamic `import()`, so bundlers only ship the versions you actually use.
+-   The `.wasm` is downloaded and compiled once per ABI and reused for every subsequent compile.
 -   Asynchronous compilation with detailed output and error handling.
 
 ## Building
@@ -109,7 +110,7 @@ try {
 ### `compile(fileName, fileContents, options?)`
 
 Asynchronously compiles a MicroPython source file. The WebAssembly module for the requested
-ABI is loaded on first use.
+ABI is loaded on first use and then reused - see [Reuse and caching](#reuse-and-caching).
 
 **Parameters:**
 
@@ -142,6 +143,44 @@ The object returned by the `compile` function promise.
 | `mpy` | `Uint8Array` | The compiled `.mpy` binary as a `Uint8Array` on success, otherwise `undefined`. |
 | `out` | `string[]` | An array of lines captured from standard output (stdout). |
 | `err` | `string[]` | An array of lines captured from standard error (stderr). |
+
+### Reuse and caching
+
+The first `compile` for an ABI downloads its `.wasm` and hands it to the engine's compiler;
+both results are cached, so later compiles with that ABI skip straight to running it. In
+Node that takes a repeated compile from ~30 ms to ~5 ms, and in the browser it also removes
+the download. The cache is per module instance and keyed by ABI and `wasmPath`, so it is
+warmed and shared automatically - there is nothing to hold onto or pass around.
+
+Each compile still runs in its own fresh WebAssembly instance. `mpy-cross` is linked with
+`EXIT_RUNTIME=1`: when `main` returns, that instance's runtime is torn down and it cannot
+be used again. Instantiating the already-compiled module is the cheap part, and it keeps
+every compile fully isolated - separate memory, separate filesystem, separate qstr pool.
+
+```js
+import { compile, preload } from "@vshymanskyy/mpy-cross-wasm";
+
+// Optional: do the download and compilation up front, e.g. while the editor loads.
+await preload({ micropython: "1.22.2" });
+
+// Now each of these only instantiates - no refetch, no recompile.
+for (const file of files) {
+    await compile(file.name, file.source, { micropython: "1.22.2" });
+}
+```
+
+### `preload(options?)`
+
+Loads and compiles the WebAssembly module for a target ahead of time, so the first
+`compile` does not have to wait for it. Takes the same `abi` / `micropython` / `wasmPath`
+as `compile` and returns a `Promise<void>`. Entirely optional - `compile` does the same
+work on demand. Being an optimisation, it does not reject if the `.wasm` cannot be read;
+a failure to load it is reported by the `compile` that needs it.
+
+### `clearCache()`
+
+Drops the cached WebAssembly modules and Emscripten factories. Only useful when releasing
+the memory matters more than reusing them; the next `compile` fetches and compiles again.
 
 ### `abiForMicropython(version)`
 
