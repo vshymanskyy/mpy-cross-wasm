@@ -26,7 +26,7 @@ EMSDK_DIR = ROOT / ".emsdk"
 
 MICROPYTHON_REPO = "https://github.com/micropython/micropython.git"
 EMSDK_REPO = "https://github.com/emscripten-core/emsdk.git"
-EMSDK_VERSION = "6.0.5"
+EMSDK_VERSION = "6.0.11"
 
 MAKE = os.environ.get("MAKE", "make")
 

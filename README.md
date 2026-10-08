@@ -8,7 +8,7 @@ ABI, or - usually more convenient - by the MicroPython release it has to run on:
 
 | MicroPython release | `.mpy` version | `mpy-cross` built from |
 | :------------------ | :----------- | :--------- |
-| v1.23.0 and up      | 6.3 | v1.28.0 |
+| v1.23.0 and up      | 6.3 | v1.29.0 |
 | v1.22.x             | 6.2 | v1.22.2 |
 | v1.20 - v1.21.0     | 6.1 | v1.21.0 |
 | v1.19.x             | 6   | v1.19.1 |
@@ -39,7 +39,7 @@ and `.micropython/`.
 `build.py` only fetches the sources, runs `mpy-cross/Makefile` with `CC` pointed at `emcc`
 and the Emscripten link flags in `LDFLAGS_EXTRA`, and copies the result into `build/`.
 Which sources to compile and which `genhdr/` files to generate is left entirely to the
-release being built, so the six checkouts spanning v1.11..v1.28 need no special-casing
+release being built, so the six checkouts spanning v1.11..v1.29 need no special-casing
 here - only v1.11 needs [a patch](patches/v1.11.patch), for fixes upstream made later.
 
 ```sh
