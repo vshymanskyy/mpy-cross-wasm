@@ -42,5 +42,8 @@
         "crypto": false,
         "fs": false,
         "path": false
+    },
+    "bin": {
+        "mpy-cross": "./build/cli.js"
     }
 }

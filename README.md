@@ -105,6 +105,19 @@ try {
 }
 ```
 
+## Command line
+
+The package installs an `mpy-cross` command with the same interface as MicroPython's own:
+
+```sh
+npx @vshymanskyy/mpy-cross-wasm -O2 -o main.mpy main.py
+mpy-cross -s app/main.py -X emit=native -march=armv7m main.py   # options are passed through
+mpy-cross a.py b.py                                              # writes a.mpy and b.mpy
+```
+
+`-o` and `-s` are handled by the wrapper; all other options go to `mpy-cross` unchanged.
+Two extras select the target (default: the newest ABI): `--abi=6.2` and `--micropython=1.22.2`.
+
 ## API Reference
 
 ### `compile(fileName, fileContents, options?)`

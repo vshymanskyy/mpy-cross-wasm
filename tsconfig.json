@@ -14,5 +14,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "files": ["index.ts", "abi-loaders.ts"]
+  "files": ["index.ts", "cli.ts", "abi-loaders.ts"]
 }
